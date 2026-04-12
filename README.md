@@ -119,6 +119,6 @@ The bottom line: the security model is equivalent to a traditional physical key.
 
 ## License
 
-MIT
+Apache 2
 
 Built with Claude by Adrian Gschwend
