@@ -1,0 +1,22 @@
+// Android build.gradle for the Kumpan Key app
+// This is a template — Flutter create will generate the full version.
+// Key settings that need to be applied:
+
+// android {
+//     compileSdk = 35
+//     
+//     defaultConfig {
+//         applicationId = "de.kumpan.key"
+//         minSdk = 23
+//         targetSdk = 35
+//         versionCode = 1
+//         versionName = "1.0.0"
+//     }
+// }
+
+// NOTE: After running `flutter create`, update the generated
+// android/app/build.gradle with:
+//   - applicationId: "de.kumpan.key"
+//   - minSdk: 23  (BLE peripheral needs API 23+)
+//   - targetSdk: 35
+//   - compileSdk: 35
