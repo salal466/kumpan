@@ -1,26 +1,33 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_ble_peripheral/flutter_ble_peripheral.dart';
 import 'package:battery_plus/battery_plus.dart';
 
-/// BLE Key Service — manages GATT server + BLE advertising.
+/// BLE Key Service — manages native GATT server + BLE advertising
+/// through platform channels.
 ///
 /// The phone acts as a BLE Peripheral exposing a standard Battery Service.
 /// The Kumpan scooter treats the presence of this BLE device as "key present".
+///
+/// All BLE work (GATT server + advertising) is done natively in Kotlin
+/// to ensure they are properly coordinated by Android's BLE stack.
 ///
 /// BLE Protocol:
 ///   Service:        0x180F (Battery Service)
 ///   Characteristic: 0x2A19 (Battery Level) — reports phone battery %
 ///   Descriptor:     0x2902 (CCCD)
 class BleKeyService extends ChangeNotifier {
-  final FlutterBlePeripheral _blePeripheral = FlutterBlePeripheral();
+  static const _channel =
+      MethodChannel('org.netlabs.ktk.kumpankey/bluetooth');
+  static const _stateChannel =
+      EventChannel('org.netlabs.ktk.kumpankey/state');
+
   final Battery _battery = Battery();
 
   bool _isAdvertising = false;
   bool _isConnected = false;
   int _batteryLevel = 100;
-  StreamSubscription<PeripheralState>? _advertisingSubscription;
+  StreamSubscription? _stateSubscription;
   Timer? _batteryTimer;
 
   bool get isAdvertising => _isAdvertising;
@@ -33,107 +40,118 @@ class BleKeyService extends ChangeNotifier {
     return 'inactive';
   }
 
-  /// Initialize the BLE peripheral and start monitoring.
+  /// Initialize: listen to native BLE state events and read battery.
   Future<void> init() async {
-    // Listen to advertising state changes
-    _advertisingSubscription =
-        _blePeripheral.onPeripheralStateChanged?.listen((state) {
-      _isAdvertising = state == PeripheralState.advertising;
-      _isConnected = state == PeripheralState.connected;
-      notifyListeners();
+    // Listen to state updates from native side
+    _stateSubscription = _stateChannel
+        .receiveBroadcastStream()
+        .listen(_onStateUpdate, onError: (e) {
+      debugPrint('BLE state stream error: $e');
     });
 
-    // Read initial battery level
+    // Sync initial state
+    try {
+      final state = await _channel.invokeMapMethod<String, dynamic>('getState');
+      if (state != null) _applyState(state);
+    } catch (e) {
+      debugPrint('Failed to get initial state: $e');
+    }
+
     await _updateBatteryLevel();
   }
 
-  /// Start BLE advertising and GATT server.
-  Future<bool> startAdvertising() async {
-    try {
-      final isSupported = await _blePeripheral.isSupported;
-      if (!isSupported) {
-        debugPrint('BLE peripheral mode not supported on this device');
-        return false;
-      }
+  void _onStateUpdate(dynamic event) {
+    if (event is Map) {
+      _applyState(Map<String, dynamic>.from(event));
+    }
+  }
 
+  void _applyState(Map<String, dynamic> state) {
+    _isAdvertising = state['isAdvertising'] as bool? ?? false;
+    _isConnected = state['isConnected'] as bool? ?? false;
+    notifyListeners();
+  }
+
+  /// Start native GATT server + BLE advertising.
+  Future<bool> start() async {
+    try {
       await _updateBatteryLevel();
 
-      // Start native GATT server so the scooter can read Battery Level
-      await _channel.invokeMethod('startGattServer', {'batteryLevel': _batteryLevel});
-
-      // Start BLE advertising
-      await _blePeripheral.start(
-        advertiseData: AdvertiseData(
-          serviceUuid: '0000180F-0000-1000-8000-00805f9b34fb',
-          includePowerLevel: false,
-          includeDeviceName: true,
-        ),
-        advertiseSettings: AdvertiseSettings(
-          advertiseMode: AdvertiseMode.advertiseModeBalanced,
-          connectable: true,
-          timeout: 0,
-          txPowerLevel: AdvertiseTxPower.advertiseTxPowerMedium,
-        ),
+      final success = await _channel.invokeMethod<bool>(
+        'start',
+        {'batteryLevel': _batteryLevel},
       );
 
-      _isAdvertising = true;
+      if (success == true) {
+        _isAdvertising = true;
 
-      // Periodically refresh battery level in GATT server
-      _batteryTimer?.cancel();
-      _batteryTimer = Timer.periodic(
-        const Duration(seconds: 30),
-        (_) => _updateBatteryLevel(),
-      );
+        // Periodically refresh battery level
+        _batteryTimer?.cancel();
+        _batteryTimer = Timer.periodic(
+          const Duration(seconds: 30),
+          (_) => _pushBatteryLevel(),
+        );
 
-      notifyListeners();
-      return true;
+        notifyListeners();
+      }
+
+      return success == true;
     } catch (e) {
-      debugPrint('Failed to start advertising: $e');
+      debugPrint('Failed to start: $e');
       return false;
     }
   }
 
-  /// Stop BLE advertising and tear down the GATT server.
-  Future<void> stopAdvertising() async {
+  /// Stop native GATT server + BLE advertising.
+  Future<void> stop() async {
     try {
-      await _blePeripheral.stop();
-      await _channel.invokeMethod('stopGattServer');
+      await _channel.invokeMethod('stop');
       _isAdvertising = false;
       _isConnected = false;
       _batteryTimer?.cancel();
       _batteryTimer = null;
       notifyListeners();
     } catch (e) {
-      debugPrint('Failed to stop advertising: $e');
+      debugPrint('Failed to stop: $e');
     }
   }
 
   /// Toggle advertising state.
   Future<bool> toggle() async {
     if (_isAdvertising) {
-      await stopAdvertising();
+      await stop();
       return true;
     } else {
-      return await startAdvertising();
+      return await start();
     }
   }
 
-  /// Update the battery level and push it to the GATT server if active.
+  /// Read battery level and update native GATT server.
   Future<void> _updateBatteryLevel() async {
     try {
       _batteryLevel = await _battery.batteryLevel;
-      if (_isAdvertising) {
-        await _channel.invokeMethod('updateBatteryLevel', {'level': _batteryLevel});
-      }
       notifyListeners();
     } catch (e) {
       debugPrint('Failed to read battery level: $e');
     }
   }
 
-  /// Returns the device's actual Bluetooth adapter name (e.g. "Zenfone 10").
-  static const _channel = MethodChannel('org.netlabs.ktk.kumpankey/bluetooth');
+  /// Push current battery level to the native GATT server.
+  Future<void> _pushBatteryLevel() async {
+    await _updateBatteryLevel();
+    if (_isAdvertising) {
+      try {
+        await _channel.invokeMethod(
+          'updateBatteryLevel',
+          {'level': _batteryLevel},
+        );
+      } catch (e) {
+        debugPrint('Failed to push battery level: $e');
+      }
+    }
+  }
 
+  /// Returns the device's actual Bluetooth adapter name.
   Future<String> getBluetoothName() async {
     try {
       final name = await _channel.invokeMethod<String>('getBluetoothName');
@@ -143,20 +161,11 @@ class BleKeyService extends ChangeNotifier {
     }
   }
 
-  /// Check if BLE peripheral mode is supported.
-  Future<bool> isSupported() async {
-    try {
-      return await _blePeripheral.isSupported;
-    } catch (e) {
-      return false;
-    }
-  }
-
   @override
   void dispose() {
-    _advertisingSubscription?.cancel();
+    _stateSubscription?.cancel();
     _batteryTimer?.cancel();
-    stopAdvertising();
+    stop();
     super.dispose();
   }
 }

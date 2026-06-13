@@ -4,7 +4,6 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   battery_plus
-  flutter_ble_peripheral
   permission_handler_windows
 )
 
