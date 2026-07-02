@@ -35,7 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _init();
   }
 
-  Future<void> _init() async {
+Future<void> _init() async {
     _locale = _detectSystemLocale();
 
     // Check permissions
@@ -49,6 +49,11 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isLoading = false;
     });
+
+    // NEU: Automatisch das Advertising starten, wenn Berechtigungen da sind
+    if (_permissionsGranted) {
+      await _onToggleKey();
+    }
   }
 
   String _detectSystemLocale() {
